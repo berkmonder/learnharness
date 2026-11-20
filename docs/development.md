@@ -32,7 +32,7 @@ Secrets and machine-specific paths may be supplied through the process environme
 |---|---|
 | Provider-specific API key variables | Optional; needed only for the selected API provider. The supported UI key names are defined in `src/core/auth-keys.ts`. |
 | `TAVILY_API_KEY` / `BRAVE_API_KEY` | Optional search adapters. Research remains available without a search key and can fetch known URLs. |
-| `DEEPGRAM_API_KEY` | Optional dictation: short-lived token minting on the server; audio streams directly from the browser to Deepgram. |
+| `DEEPGRAM_API_KEY` | Optional dictation (Deepgram engine): short-lived token minting on the server; audio streams directly from the browser to Deepgram. The Custom endpoint engine needs no extra variable: it uses the custom endpoint's credential (`CUSTOM_OPENAI_API_KEY`). |
 | `CHROME_PATH` | Optional Chrome/Chromium executable fallback for demo verification. The Electron browser helper is primary; no extra Chromium is downloaded. PDFs/SVGs use native rendering. |
 | `LH_DATA_DIR` | Relocates mutable chats, jobs, graph, settings and prompt overrides; default is repo `data/`. |
 | `LH_AUTH_FILE` | Relocates the API-key/custom-endpoint credential file; default is repo-root `auth.json`, separate from `data/`. |

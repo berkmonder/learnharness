@@ -34,7 +34,10 @@ import { CLAUDE_CODE_PROVIDER } from "./contracts/claude-code.ts";
 import type { ModelRole } from "../../config.ts";
 import type { ChatSettings } from "./contracts/chat.ts";
 import type { SearchEngineId } from "./search.ts";
-import { isDictationLanguage, type DictationLanguage } from "./dictation.ts";
+import {
+	DICTATION_MODEL_MAX_LENGTH, isDictationEngine, isDictationLanguage,
+	type DictationEngine, type DictationLanguage,
+} from "./dictation.ts";
 
 /** The schema version this code understands. Bump ONLY for breaking shape
  *  changes (a field renamed/meaning changed); pure additions never bump. */
@@ -338,6 +341,16 @@ export interface GeneralSettings {
 /** One app-wide dictation preference, shared by every composer. */
 export interface DictationSettings {
 	language?: DictationLanguage;
+	/** Absent = the factory engine (Deepgram). */
+	engine?: DictationEngine;
+	/** The custom engine's transcription model id (e.g. whisper-1); no default. */
+	model?: string;
+}
+
+/** A stored transcription model id is kept only when it is a trimmed,
+ * nonempty string within the length cap. */
+export function isDictationModel(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value === value.trim() && value.length <= DICTATION_MODEL_MAX_LENGTH;
 }
 
 /** Agent settings — everything about the non-conversation machinery. */
@@ -488,7 +501,7 @@ export interface UserSettings {
 export interface FactorySettings {
 	version: number;
 	general: Required<GeneralSettings>;
-	dictation: Required<DictationSettings>;
+	dictation: { language: DictationLanguage; engine: DictationEngine };
 	appearance: {
 		mode: "dark" | "light";
 		background: string | null;
@@ -508,7 +521,7 @@ export interface FactorySettings {
 export const FACTORY_SETTINGS: FactorySettings = {
 	version: CURRENT_SETTINGS_VERSION,
 	general: { autoUpdate: true },
-	dictation: { language: "en" },
+	dictation: { language: "en", engine: "deepgram" },
 	appearance: {
 		mode: "dark",
 		background: null, // the dark default (#141414) lives in the mode's derivation curve
@@ -808,10 +821,15 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 	}
 	if (r.dictation !== undefined) {
 		const raw = r.dictation;
-		out.dictation = raw !== null && typeof raw === "object" && !Array.isArray(raw) &&
-			isDictationLanguage((raw as Record<string, unknown>).language)
-			? { language: (raw as DictationSettings).language }
-			: {};
+		const dictation: DictationSettings = {};
+		// Each field survives on its own: a bad model must not erase the language.
+		if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+			const d = raw as Record<string, unknown>;
+			if (isDictationLanguage(d.language)) dictation.language = d.language;
+			if (isDictationEngine(d.engine)) dictation.engine = d.engine;
+			if (isDictationModel(d.model)) dictation.model = d.model;
+		}
+		out.dictation = dictation;
 	}
 	if (r.claudeCode !== undefined) {
 		const raw = r.claudeCode;

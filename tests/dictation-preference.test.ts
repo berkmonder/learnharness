@@ -108,3 +108,32 @@ test("capture also waits for a write initiated as a pending read publishes its r
 	assert.equal(await store.getLanguage(), "multi");
 	off();
 });
+
+test("every save sends the whole section: a language change keeps the engine and model", async () => {
+	const writes: unknown[] = [];
+	let record = { version: 1, dictation: { language: "en", engine: "custom", model: "whisper-1" } };
+	const store = createDictationLanguageStore(async (_url, init) => {
+		if (init?.method === "PUT") {
+			const body = JSON.parse(init.body as string);
+			writes.push(body);
+			record = { ...record, dictation: body };
+		}
+		return Response.json({ settings: record });
+	});
+	assert.deepEqual(await store.getPreference(), { language: "en", engine: "custom", model: "whisper-1" });
+	assert.equal(await store.save("tr-TR"), true);
+	assert.equal(await store.saveEngine("deepgram"), true);
+	assert.equal(await store.saveModel("default"), true);
+	assert.deepEqual(writes, [
+		{ language: "tr-TR", engine: "custom", model: "whisper-1" },
+		{ language: "tr-TR", engine: "deepgram", model: "whisper-1" },
+		{ language: "tr-TR", engine: "deepgram", model: "default" },
+	]);
+	assert.deepEqual(await store.getPreference(), { language: "tr-TR", engine: "deepgram", model: "default" });
+});
+
+test("an old record without an engine resolves to Deepgram and has no model", async () => {
+	const store = createDictationLanguageStore(async () => Response.json({ settings: { version: 1, dictation: { language: "pl" } } }));
+	assert.deepEqual(await store.getPreference(), { language: "pl", engine: "deepgram" });
+	assert.equal(store.getSnapshot().model, undefined);
+});

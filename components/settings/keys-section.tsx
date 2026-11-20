@@ -29,6 +29,7 @@ import {
 	CUSTOM_MODEL_DEFAULT_CONTEXT_WINDOW,
 	CUSTOM_MODEL_DEFAULT_MAX_TOKENS,
 	CUSTOM_PROVIDER,
+	FACTORY_SETTINGS,
 	normalizeBaseUrl,
 	type AuthKeyStatus,
 	type CustomModel,
@@ -41,6 +42,8 @@ import { ProviderMenuList } from "./model-menu.tsx";
 import { MenuShell } from "@/components/menu-shell";
 import { notifySettingsSaved } from "@/components/settings-signal";
 import { DictationLanguageSetting } from "@/components/dictation-language";
+import { DictationEngineSetting, DictationModelSetting } from "@/components/dictation-engine";
+import { useDictationPreference } from "@/components/dictation-preference";
 
 /** One pi-ai provider with plain API-key auth (the Platform seam —
  *  derived from pi-ai's own env-key table; no drift possible). */
@@ -387,6 +390,8 @@ export function KeysSection({
 	/** The custom endpoint's status + whether its connect editor is open. */
 	const [custom, setCustom] = useState<CustomStatus | null>(null);
 	const [addingCustom, setAddingCustom] = useState(false);
+	/** The Dictation group follows the engine; until it loads, the factory's. */
+	const dictationEngine = useDictationPreference().engine ?? FACTORY_SETTINGS.dictation.engine;
 
 	// Escape folds any open editor (unfolded row or the Add-provider paste)
 	// WITHOUT closing the dialog. Claimed at document CAPTURE phase — the
@@ -580,7 +585,8 @@ export function KeysSection({
 			</SettingsGroup>
 
 			{(["Dictation", "Search"] as const).map((label) => <SettingsGroup key={label} label={label} testid={label === "Dictation" ? "group-dictation" : "group-search"}>
-				{toolRows.filter((status) => label === "Dictation" ? status.id === "DEEPGRAM_API_KEY" : status.id !== "DEEPGRAM_API_KEY").map((status) => (
+				{label === "Dictation" && <DictationEngineSetting />}
+				{toolRows.filter((status) => label === "Dictation" ? status.id === "DEEPGRAM_API_KEY" && dictationEngine === "deepgram" : status.id !== "DEEPGRAM_API_KEY").map((status) => (
 					<KeyTableRow
 						key={status.id}
 						label={status.info?.label ?? status.id}
@@ -599,15 +605,22 @@ export function KeysSection({
 					/>
 				))}
 				{label === "Dictation" && <>
+					{dictationEngine === "custom" && <DictationModelSetting baseUrl={custom?.baseUrl} models={custom?.models} />}
 					<DictationLanguageSetting />
-					<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
-						Create a <a
-							href="https://console.deepgram.com/"
-							target="_blank"
-							rel="noreferrer"
-							className="underline underline-offset-2 hover:text-foreground"
-						>Deepgram API key</a> with the Member role or higher, then add it above.
-					</p>
+					{dictationEngine === "custom" ? (
+						<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
+							Uses your custom endpoint&apos;s /audio/transcriptions with its saved key.
+						</p>
+					) : (
+						<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
+							Create a <a
+								href="https://console.deepgram.com/"
+								target="_blank"
+								rel="noreferrer"
+								className="underline underline-offset-2 hover:text-foreground"
+							>Deepgram API key</a> with the Member role or higher, then add it above.
+						</p>
+					)}
 				</>}
 			</SettingsGroup>)}
 

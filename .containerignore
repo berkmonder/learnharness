@@ -1,0 +1,12 @@
+# Never in the image: dependencies and builds (made inside), local data, keys, desktop builds.
+node_modules
+.next
+dist
+data
+.fresh-data
+.memory
+auth.json
+*-credentials.json*
+.env*
+real-data-extraction
+*.log

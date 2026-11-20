@@ -121,6 +121,31 @@ same-origin JSON requests. Limits are **15 seconds** for discovery, **8 MiB** fo
 response, **10,000** listed models, and **64 KiB** for configuration-write bodies.
 These are protections for the new endpoint, not a multiuser authentication system.
 
+## Dictation
+
+The custom endpoint can also transcribe dictation. Under **Settings → Providers →
+Dictation**, set **Engine** to **Custom endpoint** and pick a **Model** from the
+endpoint's model list (for example `whisper-1` on a LiteLLM gateway in front of
+Speaches). Nothing is preselected. The shared **Language** setting is sent without
+its region (`en-GB` → `en`); **Multilingual** sends no language, so the server
+detects it.
+
+- The browser records the run as 16 kHz mono WAV, the same capture Deepgram uses,
+  and shows only the meter while you talk, as with Deepgram.
+- **Stop** (or ⌘D) posts the recording once to `POST /api/stt/transcribe`. The
+  server forwards it as multipart (`file`, `model`, `language`,
+  `response_format=json`) to `<base URL>/audio/transcriptions` and inserts the
+  returned `text` into the input. **Esc** cancels the run, including an upload in
+  progress.
+- A run stops itself after **12 minutes** and transcribes what it has, keeping the
+  upload under the API's 26 MiB body limit.
+- Credentials follow the rules above: URL, mode and binding must match before a key
+  is read, keyless never reads one, and the renderer never sees the key. Errors are
+  short lines such as `Transcription failed (HTTP 500)`, never the upstream body.
+- `GET /api/stt/transcribe` checks at the start of a run that the engine, model
+  and endpoint are usable, so a misconfigured run fails before you talk.
+- A failed transcription does not keep the recording for a retry.
+
 ## Pricing and previous development configuration
 
 Custom model pricing is **unknown/unpriced**, not $0—even for an endpoint that may
