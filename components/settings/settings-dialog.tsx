@@ -188,6 +188,15 @@ export function SettingsDialogBody({
 	useEffect(() => {
 		setActive(initialSection);
 	}, [initialSection]);
+	// The phone tab strip scrolls sideways: keep the active tab in view
+	// (a deep link to General lands off-screen otherwise). "nearest" is a
+	// no-op when it is already visible — always, in the desktop column.
+	const navRef = useRef<HTMLElement | null>(null);
+	useEffect(() => {
+		navRef.current
+			?.querySelector<HTMLElement>(`[data-testid="settings-nav-${active}"]`)
+			?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+	}, [active]);
 
 	// Fetch once per dialog mount. 200 {settings: null} is FIRST BOOT
 	// (no record = factory everything), not a failure — the error state is
@@ -267,7 +276,9 @@ export function SettingsDialogBody({
 			aria-modal="true"
 			aria-label="Settings"
 			data-testid="settings-dialog"
-			className="settings-dialog-pop flex h-[620px] max-h-[85vh] w-[920px] max-w-[90vw] flex-col overflow-hidden rounded-md border border-border bg-card shadow-xl"
+			// Phone (below 640px, owner 2026-11-21): full screen, the nav a
+			// tab strip under the header; sm: is the desktop dialog as before.
+			className="settings-dialog-pop flex h-dvh w-full flex-col overflow-hidden bg-card shadow-xl sm:h-[620px] sm:max-h-[85vh] sm:w-[920px] sm:max-w-[90vw] sm:rounded-md sm:border sm:border-border"
 			onClick={(e) => e.stopPropagation()}
 		>
 			{/* Header — the app's quiet CMU title language. */}
@@ -299,13 +310,15 @@ export function SettingsDialogBody({
 					</Hint>
 			</header>
 
-			<div className="flex min-h-0 flex-1">
+			<div className="flex min-h-0 flex-1 flex-col sm:flex-row">
 				{/* Left nav — text-only, the session-list mono language,
-					    active = bg-accent. */}
+					    active = bg-accent. On a phone: a sideways-scrolling tab
+					    strip under the header, so the content gets the width. */}
 				<nav
+					ref={navRef}
 					aria-label="Settings sections"
 					data-testid="settings-nav"
-					className="flex w-44 shrink-0 flex-col gap-1 border-r border-border p-2"
+					className="flex shrink-0 gap-1 overflow-x-auto border-b border-border p-2 sm:w-44 sm:flex-col sm:overflow-x-visible sm:border-r sm:border-b-0"
 				>
 					{SECTIONS.map((s) => (
 						<button
@@ -313,7 +326,7 @@ export function SettingsDialogBody({
 							type="button"
 							data-testid={`settings-nav-${s.id}`}
 							aria-current={active === s.id}
-							className={`rounded-sm px-3 py-1.5 text-left font-ui text-sm transition-colors ${
+							className={`shrink-0 whitespace-nowrap rounded-sm px-3 py-1.5 text-left font-ui text-sm transition-colors ${
 								active === s.id
 									? "bg-accent text-foreground"
 									: "text-muted-foreground hover:bg-accent hover:text-foreground"
