@@ -457,7 +457,8 @@ function OpenSetupDialog({ onClose, onDone }: SetupDialogProps) {
 				aria-modal="true"
 				aria-label="Set up your models"
 				data-testid="setup-dialog"
-				className="settings-dialog-pop flex max-h-[85vh] w-[640px] max-w-[90vw] flex-col overflow-hidden rounded-md border border-border bg-card shadow-xl"
+				// Phone (below 640px): full screen like Settings; sm: as before.
+				className="settings-dialog-pop flex h-dvh w-full flex-col overflow-hidden bg-card shadow-xl sm:h-auto sm:max-h-[85vh] sm:w-[640px] sm:max-w-[90vw] sm:rounded-md sm:border sm:border-border"
 				onClick={(e) => e.stopPropagation()}
 			>
 				<header className="flex h-15 shrink-0 items-center gap-3 border-b border-border px-5">

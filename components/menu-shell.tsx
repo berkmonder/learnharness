@@ -69,13 +69,20 @@ export interface MenuPlacement {
  *  filter re-measure honestly) → side, fixed style, cap. Flip rule: stay
  *  on the preferred side unless it cannot show the full content AND the
  *  other side is roomier. The cap always keeps the menu inside its side's
- *  room when there is room; the floor keeps it usable when there isn't. */
+ *  room when there is room; the floor keeps it usable when there isn't.
+ *
+ *  Sideways (phone layout, owner 2026-11-21): with the menu's measured
+ *  width, a menu that would run off either side of the screen is pulled
+ *  back to EDGE from it; one that fits keeps its exact anchoring. Its
+ *  width is capped at the viewport less both EDGEs (a 352px menu on a
+ *  phone). Unmeasured (contentWidth ≤ 0) keeps the plain anchoring. */
 export function computeMenuPlacement(
 	rect: { top: number; bottom: number; left: number; right: number },
 	viewport: { width: number; height: number },
 	contentHeight: number,
 	preferredSide: MenuSide,
 	align: MenuAlign,
+	contentWidth = 0,
 ): MenuPlacement {
 	const availDown = viewport.height - EDGE - (rect.bottom + GAP);
 	const availUp = rect.top - GAP - EDGE;
@@ -91,11 +98,20 @@ export function computeMenuPlacement(
 	}
 	const avail = side === "down" ? availDown : availUp;
 	const maxHeight = Math.max(MIN_USABLE, Math.min(CAP_VH * viewport.height, avail));
+	const maxWidth = Math.max(0, viewport.width - 2 * EDGE);
+	const width = Math.min(contentWidth, maxWidth);
+	// The anchored offset from the menu's own edge; pulled back only when the
+	// menu would leave the screen on either side.
+	const keepOnScreen = (offset: number) => {
+		if (width <= 0) return offset;
+		if (offset + width > viewport.width) offset = viewport.width - EDGE - width;
+		return offset < 0 ? EDGE : offset;
+	};
 	const horizontal: Record<string, number> =
-		align === "right" ? { right: viewport.width - rect.right } : { left: rect.left };
+		align === "right" ? { right: keepOnScreen(viewport.width - rect.right) } : { left: keepOnScreen(rect.left) };
 	const vertical: Record<string, number> =
 		side === "down" ? { top: rect.bottom + GAP } : { bottom: viewport.height - rect.top + GAP };
-	return { side, style: { ...horizontal, ...vertical }, maxHeight };
+	return { side, style: { ...horizontal, ...vertical, maxWidth }, maxHeight };
 }
 
 /** The shared shell. Exactly one anchor seam: pass `anchorRef` (a live
@@ -204,6 +220,7 @@ export function MenuShell({
 				menuRef.current.scrollHeight,
 				preferredSide,
 				align,
+				menuRef.current.offsetWidth,
 			);
 			setPlaced(p);
 		};

@@ -17,6 +17,7 @@ import { Hint } from "@/components/ui/hint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { usePhone } from "@/components/use-phone";
 import { fuzzyScore } from "@/src/core";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import type { ChatListItem } from "@/src/core";
@@ -84,9 +85,19 @@ declare global {
 	}
 }
 
-const SidebarContext = createContext<{ open: boolean; toggle: () => void }>({
+/*
+ * THE PHONE DRAWER (owner, 2026-11-21): below 640px (usePhone) the sidebar
+ * is a slide-over drawer instead of the inline column — an inline 288px
+ * column squeezes a phone page to a strip. Its open state is its own:
+ * it always starts closed, is never persisted, and leaves the desktop
+ * preference above untouched. It closes on the backdrop, on Esc, on
+ * navigation, and when Settings opens. At 640px and up nothing changes.
+ */
+const SidebarContext = createContext<{ open: boolean; toggle: () => void; phone: boolean; closeDrawer: () => void }>({
 	open: false,
 	toggle: () => {},
+	phone: false,
+	closeDrawer: () => {},
 });
 
 export function useSidebar() {
@@ -106,6 +117,13 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	const [open, setOpen] = useState(false);
 	const [narrow, setNarrow] = useState(false);
 	const [mounted, setMounted] = useState(false);
+	const phone = usePhone();
+	const [drawerOpen, setDrawerOpen] = useState(false);
+	const closeDrawer = useCallback(() => setDrawerOpen(false), []);
+	// Leaving the phone width drops the drawer: back on a phone it starts closed.
+	useEffect(() => {
+		if (!phone) setDrawerOpen(false);
+	}, [phone]);
 
 	useEffect(() => {
 		// Electron shell detection (merged chrome, 2026-09-17): keys the
@@ -148,6 +166,11 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	}, []);
 
 	const toggle = useCallback(() => {
+		// The phone drawer: its own state, never persisted.
+		if (phone) {
+			setDrawerOpen((v) => !v);
+			return;
+		}
 		// Opening while narrow (auto-closed, or the user's own closed-at-
 		// narrow): ask the shell to widen to the threshold — the resize
 		// listener flips `narrow` and the sidebar appears. The preference
@@ -163,7 +186,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 			localStorage.setItem(STORAGE_KEY, v ? "0" : "1");
 			return !v;
 		});
-	}, [narrow, open]);
+	}, [narrow, open, phone]);
 
 	// ⌘B: the global shortcut dispatches kbdEventForAction("toggle-sidebar")
 	// and the context answers on exactly that name — the shared spelling
@@ -179,9 +202,11 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	}, [toggle]);
 
 	return (
-		<SidebarContext.Provider value={{ open: open && !narrow, toggle }}>
-			{/* transitions gated on mount: no slide-in flash on page load */}
-			<div className={cn("flex h-dvh", mounted && "[&_.sidebar-motion]:transition-[width,margin,opacity]")}>{children}</div>
+		<SidebarContext.Provider value={{ open: phone ? drawerOpen : open && !narrow, toggle, phone, closeDrawer }}>
+			{/* transitions gated on mount: no slide-in flash on page load.
+			    translate is the phone drawer's slide (Tailwind 4's translate-x
+			    sets the translate property); the desktop column never moves. */}
+			<div className={cn("flex h-dvh", mounted && "[&_.sidebar-motion]:transition-[width,margin,opacity,translate]")}>{children}</div>
 		</SidebarContext.Provider>
 	);
 }
@@ -199,7 +224,10 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
  *  The icon fades with the slot and is clipped by it as it collapses —
  *  no popping in either direction. */
 export function SidebarToggle() {
-	const { open, toggle } = useSidebar();
+	const { open: sidebarOpen, toggle, phone } = useSidebar();
+	// The phone drawer covers the page instead of sharing the row, so the
+	// toggle keeps its slot (no header shift under the sliding drawer).
+	const open = sidebarOpen && !phone;
 	return (
 		<span
 			className={cn(
@@ -390,7 +418,7 @@ export type SessionKindFilter = "teach" | "all" | "practice";
 const KIND_FILTER_KEY = "lh:session-kind-filter";
 
 function SessionsSidebar() {
-	const { open, toggle } = useSidebar();
+	const { open, toggle, phone, closeDrawer } = useSidebar();
 	const [chats, setChats] = useState<ChatListItem[] | null>(null);
 	const [query, setQuery] = useState("");
 	const [kindFilter, setKindFilter] = useState<SessionKindFilter>("all");
@@ -645,12 +673,54 @@ function SessionsSidebar() {
 		// freshness (S6) — no interval, nothing standing.
 	}, [open, pathname, refresh]);
 
+	// The phone drawer closes on navigation (a session, New session,
+	// Practice, the logo) — the page it opened is the point.
+	useEffect(() => {
+		closeDrawer();
+	}, [pathname, closeDrawer]);
+
+	// Esc closes the phone drawer — a surfaced layer, so it claims at the
+	// document level (THE ONE-ESC LAW in keyboard-shortcuts.tsx). A menu
+	// open inside it claims first, at its own element.
+	const drawerOpen = phone && open;
+	useEffect(() => {
+		if (!drawerOpen) return;
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			e.preventDefault();
+			e.stopPropagation();
+			closeDrawer();
+		};
+		document.addEventListener("keydown", onKeyDown);
+		return () => document.removeEventListener("keydown", onKeyDown);
+	}, [drawerOpen, closeDrawer]);
+
 	return (
+		<>
+		{/* The phone drawer's backdrop (max-sm only: at 640px and up the
+		    sidebar is inline and has none). A tap closes the drawer. */}
+		<div
+			aria-hidden="true"
+			data-testid="sidebar-backdrop"
+			onClick={closeDrawer}
+			className={cn(
+				"fixed inset-0 z-40 bg-black/50 transition-opacity duration-200 sm:hidden",
+				drawerOpen ? "opacity-100" : "pointer-events-none opacity-0",
+			)}
+		/>
 		<aside
-			className={cn("sidebar-motion shrink-0 overflow-hidden duration-200", open ? "w-72" : "w-0")}
+			className={cn(
+				"sidebar-motion shrink-0 overflow-hidden duration-200",
+				open ? "w-72" : "w-0",
+				// Phone: a fixed slide-over drawer — full width of its own,
+				// sliding in from the left instead of growing from zero.
+				"max-sm:fixed max-sm:inset-y-0 max-sm:left-0 max-sm:z-50 max-sm:w-72 max-sm:max-w-[85vw]",
+				!open && "max-sm:-translate-x-full",
+			)}
 			aria-hidden={!open}
+			data-testid="sessions-sidebar"
 		>
-			<div className="flex h-full w-72 flex-col border-r bg-background">
+			<div className="flex h-full w-72 flex-col border-r bg-background max-sm:w-full">
 				{/* LH wordmark — the owner's header; close toggle sits at the edge.
 				    Merged chrome (2026-09-17): in Electron this band is the
 				    window's drag surface and starts after the traffic lights
@@ -853,7 +923,10 @@ function SessionsSidebar() {
 						<Hint label="Settings" action="open-settings" side="right">
 							<button
 								type="button"
-								onClick={() => openSettings()}
+								onClick={() => {
+									closeDrawer(); // the phone drawer steps aside for the dialog
+									openSettings();
+								}}
 								data-testid="settings-entry"
 								className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs uppercase tracking-wider text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
 							>
@@ -939,6 +1012,7 @@ function SessionsSidebar() {
 					onDeleted={onDeleted}
 				/>
 			</aside>
+		</>
 	);
 }
 

@@ -858,7 +858,10 @@ export function DictationBar({ dictation }: { dictation: Dictation }) {
 					className="flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-border/50 bg-card/50 text-xs text-muted-foreground/70 shadow-lg backdrop-blur transition-colors hover:border-border hover:text-muted-foreground"
 				>
 					<MicIcon className="size-3.5" />
-					<span className="max-w-full truncate">{error ?? "Dictate"}</span>
+					{/* Phone (below 640px): the mic alone says Dictate — the row
+					    has no room for the word. An error still shows: it says
+					    what to fix. */}
+					<span className={error ? "max-w-full truncate" : "max-w-full truncate max-sm:hidden"}>{error ?? "Dictate"}</span>
 				</button>
 			</Hint>
 		);

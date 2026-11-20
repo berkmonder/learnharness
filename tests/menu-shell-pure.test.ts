@@ -80,3 +80,37 @@ describe("computeMenuPlacement — cap + position", () => {
 		assert.ok(!("right" in p.style));
 	});
 });
+describe("computeMenuPlacement — sideways (phone layout, 2026-11-21)", () => {
+	const phone = { width: 375, height: 812 };
+	const at = (left: number, right: number) => ({ top: 700, bottom: 730, left, right });
+
+	it("a menu that fits keeps its exact anchoring", () => {
+		const p = computeMenuPlacement(rect(400, 440), viewport(800), 300, "down", "left", 352);
+		assert.equal(p.style.left, 100, "desktop placement unchanged");
+		const q = computeMenuPlacement({ top: 400, bottom: 440, left: 400, right: 600 }, viewport(800), 300, "down", "right", 352);
+		assert.equal(q.style.right, 1280 - 600);
+	});
+
+	it("a left-aligned menu that would run off the right edge is pulled back to 8px from it", () => {
+		const p = computeMenuPlacement(at(200, 260), phone, 300, "up", "left", 352);
+		assert.equal(p.style.left, 375 - 8 - 352);
+	});
+
+	it("a right-aligned menu that would run off the left edge starts 8px in", () => {
+		// The composer's model control: its right edge at 300 leaves 75px on
+		// the right, so a 352px menu would start at x = -52.
+		const p = computeMenuPlacement(at(200, 300), phone, 300, "up", "right", 352);
+		assert.equal(p.style.right, 375 - 8 - 352);
+	});
+
+	it("a menu wider than the screen is capped at the screen less both edges", () => {
+		const p = computeMenuPlacement(at(20, 60), { width: 320, height: 640 }, 300, "up", "left", 352);
+		assert.equal(p.style.maxWidth, 320 - 16);
+		assert.equal(p.style.left, 8);
+	});
+
+	it("unmeasured width keeps the plain anchoring", () => {
+		const p = computeMenuPlacement(at(200, 260), phone, 300, "up", "left");
+		assert.equal(p.style.left, 200);
+	});
+});

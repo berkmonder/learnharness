@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { JetBrains_Mono, Source_Sans_3 } from "next/font/google";
 import "katex/dist/katex.min.css";
 import "./globals.css";
@@ -16,6 +16,15 @@ const prose = Source_Sans_3({ subsets: ["latin"], variable: "--font-sans3" });
 export const metadata: Metadata = {
 	title: "Learning Harness",
 	description: "A teacher agent with a memory — sessions, quizzes, and a knowledge graph of what you know.",
+};
+
+// Phone layout (owner, 2026-11-21): when the on-screen keyboard opens,
+// Android Chrome shrinks the page instead of panning it, so the composer
+// sits right above the keyboard and the header stays put (h-dvh follows).
+// iOS ignores it; desktop has no on-screen keyboard. Next keeps its
+// default width=device-width, initial-scale=1 alongside.
+export const viewport: Viewport = {
+	interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
