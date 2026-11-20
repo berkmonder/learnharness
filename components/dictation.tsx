@@ -4,8 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2Icon, MicIcon } from "lucide-react";
 import { useSettingsDialog } from "@/components/settings/settings-dialog";
 import { Hint } from "@/components/ui/hint";
-import { deepgramListenUrl, type DictationLanguage } from "@/src/core";
-import { useDictationLanguage } from "@/components/dictation-preference";
+import {
+	CUSTOM_DICTATION_MAX_MS, deepgramListenUrl, encodeWav,
+	type DictationEngine, type DictationLanguage,
+} from "@/src/core";
+import { useDictationPreference } from "@/components/dictation-preference";
 import { setDictationActive } from "@/components/dictation-state";
 export { isDictationActive } from "@/components/dictation-state";
 
@@ -83,6 +86,17 @@ export { isDictationActive } from "@/components/dictation-state";
  *     path, which always mints FRESH.
  *   - The honest floor stays: getUserMedia can't be pre-warmed (the mic
  *     indicator would stay lit) — hence the owner's optimistic meter.
+ *
+ * The custom engine (Settings → Providers → Dictation → Engine = Custom
+ * endpoint): the same mic, worklet, meter and deferred transcript, but no
+ * socket and no token. A readiness GET on /api/stt/transcribe stands in for
+ * the mint (it fails fast, concurrently with the mic). Frames collect in a
+ * per-run buffer from the first quantum; Stop (or the 12-minute limit,
+ * CUSTOM_DICTATION_MAX_MS) encodes them as one WAV and POSTs it to the same
+ * route, which forwards it to the custom endpoint's /audio/transcriptions
+ * with the endpoint's own key. The text joins the deferred buffer and
+ * cleanup() flushes it — so finish(), Esc and the flush law are unchanged.
+ * Esc during the upload aborts it.
  */
 
 /*
@@ -109,6 +123,35 @@ export const DEEPGRAM_KEY_ID = "DEEPGRAM_API_KEY";
  * instead. Exported for pins; the errored idle button's click recognizes
  * it and deep-links Settings → Keys → the Deepgram row. */
 export const DICTATION_KEYLESS = "Dictation needs a Deepgram key";
+
+/** The custom engine's settings-fixable lines (client-authored, like
+ * DICTATION_KEYLESS): their click opens Settings → Providers, where the
+ * Dictation group and the custom endpoint live. */
+export const DICTATION_NO_ENDPOINT = "Dictation needs a custom endpoint";
+export const DICTATION_NO_MODEL = "Pick a transcription model";
+
+/** Where an errored idle button's click leads: Settings (section + optional
+ *  keys row) for a settings-fixable error, else null (click = retry). */
+export function dictationErrorSettingsTarget(error: string | null): { section: "keys"; row?: string } | null {
+	if (error === DICTATION_KEYLESS) return { section: "keys", row: DEEPGRAM_KEY_ID };
+	if (error === DICTATION_NO_ENDPOINT || error === DICTATION_NO_MODEL) return { section: "keys" };
+	return null;
+}
+
+/** The transcribe route's failure body → the line the button shows. */
+function transcribeError(status: number, data: { message?: string; code?: string }): string {
+	if (data.code === "no-endpoint") return DICTATION_NO_ENDPOINT;
+	if (data.code === "no-model") return DICTATION_NO_MODEL;
+	return data.message ?? `transcription route ${status}`;
+}
+
+/** Can a custom-engine run start? Resolves, or throws the button's line. */
+async function checkCustomReady(): Promise<void> {
+	const res = await fetch("/api/stt/transcribe");
+	if (res.ok) return;
+	const data = (await res.json().catch(() => ({}))) as { message?: string; code?: string };
+	throw new Error(transcribeError(res.status, data));
+}
 
 /** Mint a fresh short-lived token (the route holds the real key
  *  server-side). Module-level: the start path's warm cache and the
@@ -282,7 +325,7 @@ export type Dictation = {
  * question waits.
  */
 export function useDictation({ append }: { append: (text: string) => void }): Dictation {
-	const { getLanguage } = useDictationLanguage();
+	const { getPreference } = useDictationPreference();
 	const [phase, setPhase] = useState<DictationPhase>("idle");
 	const [error, setError] = useState<string | null>(null);
 	/** Latest RMS from the worklet — the meter samples this (dictate pattern). */
@@ -320,6 +363,19 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 	/** Resolvers waiting for the run to fully end (finish(), owner
 	 *  2026-10-01): released by cleanup() — every terminal path runs it. */
 	const waitersRef = useRef<Array<() => void>>([]);
+	/** The current run's engine (read from the preference at start). */
+	const engineRef = useRef<DictationEngine>("deepgram");
+	/** Custom engine: every captured frame of the run, uploaded once at Stop. */
+	const framesRef = useRef<Int16Array[]>([]);
+	/** Custom engine: the in-flight upload — Esc/teardown aborts it. */
+	const uploadRef = useRef<AbortController | null>(null);
+	/** Custom engine: the 12-minute auto-stop. */
+	const limitRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	/** The latest stop() — the auto-stop timer must not call a stale closure. */
+	const stopRef = useRef<() => void>(() => {});
+	/** Custom engine: Stop was pressed this run. A Stop during the readiness
+	 *  check hands the run to the upload; the start path must not resume it. */
+	const stoppedRef = useRef(false);
 
 	/** Flush the buffered transcript into the primary input — question claim
 	 *  first, composer fallback. Called exactly once per run, at cleanup; the
@@ -340,6 +396,13 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 			clearTimeout(safetyRef.current);
 			safetyRef.current = null;
 		}
+		if (limitRef.current) {
+			clearTimeout(limitRef.current);
+			limitRef.current = null;
+		}
+		uploadRef.current?.abort();
+		uploadRef.current = null;
+		framesRef.current = [];
 		pendingRef.current = [];
 		for (const track of streamRef.current?.getTracks() ?? []) track.stop();
 		streamRef.current = null;
@@ -361,9 +424,42 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		// target field with the dictated tail already in it.
 		for (const w of waitersRef.current.splice(0)) w();
 		// Pre-mint for the next run (mitigation D) — best-effort; a keyless
-		// page just doesn't warm.
-		if (warmNext) warmTokens.refresh();
+		// page just doesn't warm. The custom engine has no token to warm.
+		if (warmNext && engineRef.current === "deepgram") warmTokens.refresh();
 	}, []);
+
+	/** Custom engine: the run's frames → one WAV → the transcribe route →
+	 *  the deferred buffer → cleanup() flushes it. `gen` guards staleness:
+	 *  a cancel (Esc) bumps it and aborts the upload, so nothing lands. */
+	const transcribe = useCallback(async (gen: number) => {
+		const frames = framesRef.current;
+		framesRef.current = [];
+		if (frames.length === 0) {
+			cleanup();
+			return;
+		}
+		const controller = new AbortController();
+		uploadRef.current = controller;
+		try {
+			const res = await fetch("/api/stt/transcribe", {
+				method: "POST",
+				headers: { "Content-Type": "audio/wav" },
+				body: encodeWav(frames),
+				signal: controller.signal,
+			});
+			const data = (await res.json().catch(() => ({}))) as { text?: unknown; message?: string; code?: string };
+			if (gen !== genRef.current) return;
+			if (res.ok && typeof data.text === "string") {
+				if (data.text) bufferRef.current.push(data.text);
+			} else {
+				setError(transcribeError(res.status, data));
+			}
+		} catch {
+			if (gen !== genRef.current) return; // cancelled: cleanup already ran
+			setError("Custom endpoint unreachable");
+		}
+		if (gen === genRef.current) cleanup();
+	}, [cleanup]);
 
 	/** Open the Deepgram socket and wire its messages. `gen` guards staleness. */
 	const openSocket = useCallback(
@@ -437,10 +533,14 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		reconnectsRef.current = 0;
 		bufferRef.current = []; // fresh run, fresh buffer (round 2)
 		pendingRef.current = []; // fresh run, fresh queue (mitigation A)
+		framesRef.current = []; // fresh run, fresh recording (custom engine)
+		stoppedRef.current = false;
 		const gen = ++genRef.current;
 		let language: DictationLanguage;
+		let engine: DictationEngine;
+		let model: string | undefined;
 		try {
-			language = await getLanguage();
+			({ language, engine, model } = await getPreference());
 		} catch (e) {
 			if (gen !== genRef.current) return;
 			setError(e instanceof Error ? e.message : "Dictation language unavailable");
@@ -448,14 +548,24 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 			return;
 		}
 		if (gen !== genRef.current) return;
+		engineRef.current = engine;
+		const custom = engine === "custom";
+		// No model chosen: say so before the mic lights up.
+		if (custom && !model) {
+			setError(DICTATION_NO_MODEL);
+			cleanup();
+			return;
+		}
 
 		// Mitigation D: the warm token (pre-minted at mount / after the last
 		// run) resolves ~instantly; a cold/keyless mint surfaces below. The
 		// mic is the long pole (macOS HAL + APM init) and gates everything —
 		// the token runs concurrently with it. 127.0.0.1 is a secure
 		// context, so getUserMedia works without TLS; macOS TCC prompts on
-		// first use.
-		const tokenPromise = warmTokens.mint();
+		// first use. The custom engine's readiness check rides the same slot.
+		const tokenPromise: Promise<string | null> = custom
+			? checkCustomReady().then(() => null)
+			: warmTokens.mint();
 		tokenPromise.catch(() => {}); // surfaced below; no unhandled rejection
 		const micPromise = navigator.mediaDevices.getUserMedia({
 			audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -482,6 +592,10 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 				const msg = e.data as { type: string; rms?: number; buffer?: ArrayBuffer };
 				if (msg.type === "level") {
 					levelRef.current = msg.rms ?? 0; // never reset to zero (dictate pattern)
+				} else if (msg.type === "audio" && custom) {
+					// The whole run, from the first quantum: nothing captured is lost.
+					const frame = msg.buffer as ArrayBuffer | Int16Array;
+					framesRef.current.push(frame instanceof Int16Array ? frame : new Int16Array(frame));
 				} else if (msg.type === "audio") {
 					const ws = wsRef.current;
 					if (ws && ws.readyState === WebSocket.OPEN) ws.send(msg.buffer!);
@@ -512,20 +626,31 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 			return;
 		}
 		if (gen !== genRef.current) return;
-		let token: string;
+		let token: string | null;
 		try {
 			token = await tokenPromise;
 		} catch (e) {
 			if (gen !== genRef.current) return;
+			if (custom && stoppedRef.current) return; // the upload's own result decides
 			setError(e instanceof Error ? e.message : "token unavailable");
 			cleanup();
 			return;
 		}
 		if (gen !== genRef.current) return;
+		if (custom || token === null) {
+			if (stoppedRef.current) return; // stopped during the check: already uploading
+			// Custom engine: recording since the graph went live; the upload
+			// happens at Stop — or here, at the 12-minute limit.
+			setPhase("recording");
+			limitRef.current = setTimeout(() => {
+				if (gen === genRef.current) stopRef.current();
+			}, CUSTOM_DICTATION_MAX_MS);
+			return;
+		}
 		// Mitigation B: the handshake fires the moment the graph is live,
 		// overlapping any remaining token wait — mic-gated, never before it.
 		openSocket(gen, token, language);
-	}, [openSocket, cleanup, getLanguage]);
+	}, [openSocket, cleanup, getPreference]);
 
 	const stop = useCallback(() => {
 		const gen = genRef.current;
@@ -540,6 +665,18 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		sourceRef.current = null;
 		workletRef.current?.disconnect();
 		workletRef.current = null;
+
+		if (engineRef.current === "custom") {
+			stoppedRef.current = true;
+			if (limitRef.current) {
+				clearTimeout(limitRef.current);
+				limitRef.current = null;
+			}
+			// Stopped while still checking readiness: the start path is
+			// awaiting it; its frames are still worth transcribing.
+			void transcribe(gen);
+			return;
+		}
 
 		const ws = wsRef.current;
 		if (ws && ws.readyState === WebSocket.OPEN) {
@@ -557,7 +694,8 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 		} else {
 			cleanup();
 		}
-	}, [phase, cleanup]);
+	}, [phase, cleanup, transcribe]);
+	stopRef.current = stop;
 
 	const cancel = useCallback(() => {
 		if (phase === "idle") return;
@@ -600,14 +738,18 @@ export function useDictation({ append }: { append: (text: string) => void }): Di
 	// page owns ONE hook instance, and only the mounted page's listener is
 	// attached.
 	useEffect(() => {
-		warmTokens.refresh(); // pre-mint at mount (mitigation D) — silent if keyless
+		// Pre-mint at mount (mitigation D) — silent if keyless; only Deepgram
+		// has a token to warm.
+		void getPreference()
+			.then(({ engine }) => { if (engine === "deepgram") warmTokens.refresh(); })
+			.catch(() => {});
 		return () => {
 			// Navigation cancels capture: invalidate every pending await before
 			// releasing resources, and never append into a different page's input.
 			bufferRef.current = [];
 			cleanup(false);
 		};
-	}, [cleanup]);
+	}, [cleanup, getPreference]);
 	useEffect(() => {
 		window.addEventListener("lh:kbd-toggle-dictation", toggle);
 		return () => window.removeEventListener("lh:kbd-toggle-dictation", toggle);
@@ -647,9 +789,11 @@ export function DictationBar({ dictation }: { dictation: Dictation }) {
 	const { open: openSettings } = useSettingsDialog();
 	/** The keyless click (zero-keys wave, owner dictation trio): the errored
 	 *  idle button deep-links Settings → Keys → the Deepgram row and clears
-	 *  the error — the surface is clean when the user returns. Any other
-	 *  error keeps the old behavior (click = retry, which clears). */
-	const keyless = error === DICTATION_KEYLESS;
+	 *  the error — the surface is clean when the user returns. The custom
+	 *  engine's settings-fixable errors open Settings → Providers the same
+	 *  way. Any other error keeps the old behavior (click = retry, which
+	 *  clears). */
+	const settingsTarget = dictationErrorSettingsTarget(error);
 	const [levels, setLevels] = useState<number[]>(() => new Array(METER_CELLS).fill(0));
 	/** Adaptive cell count (owner round 2): derived from the meter's
 	 *  measured width — narrow rows show fewer bars instead of
@@ -702,9 +846,9 @@ export function DictationBar({ dictation }: { dictation: Dictation }) {
 				<button
 					type="button"
 					onClick={() => {
-						if (keyless) {
+						if (settingsTarget) {
 							clearError();
-							openSettings("keys", DEEPGRAM_KEY_ID);
+							openSettings(settingsTarget.section, settingsTarget.row);
 						} else {
 							toggle();
 						}
