@@ -33,5 +33,5 @@ ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 \
     CHROME_PATH=/usr/bin/chromium
 VOLUME /data
 EXPOSE 3000
-HEALTHCHECK --interval=30s --start-period=30s CMD node -e "fetch('http://127.0.0.1:' + process.env.PORT + '/').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+# Health check: the runner's (Podman's OCI images carry none); on the PC, HealthCmd in its unit.
 CMD ["node", "server.js"]
